@@ -2,17 +2,17 @@
 # - use_local_image_pull = true: bypasses transfer service, honors registry mirrors
 # - discard_unpacked_layers = false: preserves layers for Spegel to serve to peers
 # - config_path for certs.d: enables Spegel registry mirror interception
-# - Shell script creates docker.io mirror directory for Spegel
+# - Spegel init container creates mirror config at _default/hosts.toml
+# - Do NOT create docker.io/hosts.toml here -- it would override Spegel's mirror
 ---
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
 metadata:
   name: gpu-nodeclass
 spec:
-  amiFamily: AL2023
   amiSelectorTerms:
-    - name: "amazon-eks-node-al2023-x86_64-nvidia-*"
-  role: "KarpenterNodeRole-gpu-accelerator-20260529073014540000000016"
+    - alias: al2023@latest
+  role: "KarpenterNodeRole-gpu-accelerator"
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: "gpu-accelerator"
@@ -31,18 +31,6 @@ spec:
     Content-Type: multipart/mixed; boundary="BOUNDARY"
 
     --BOUNDARY
-    Content-Type: text/x-shellscript
-
-    #!/bin/bash
-    # Prepare docker.io mirror directory for Spegel P2P interception
-    mkdir -p /etc/containerd/certs.d/docker.io
-    cat <<EOF > /etc/containerd/certs.d/docker.io/hosts.toml
-    server = "https://registry-1.docker.io"
-    [host."https://registry-1.docker.io"]
-      capabilities = ["pull", "resolve"]
-    EOF
-
-    --BOUNDARY
     Content-Type: application/node.eks.aws
 
     ---
@@ -55,5 +43,4 @@ spec:
             config_path = "/etc/containerd/certs.d"
           [plugins."io.containerd.cri.v1.images"]
             discard_unpacked_layers = false
-            use_local_image_pull = true
     --BOUNDARY--

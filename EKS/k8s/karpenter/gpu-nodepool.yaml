@@ -1,10 +1,13 @@
 # GPU NodePool: on-demand instances with GPU taint and WhenEmpty consolidation
 # Used by both baseline and optimized experiments (paired with respective EC2NodeClass)
 #
-# To switch instance type, change instance-family and instance-size:
-#   g6e / 2xlarge  = 1x L40S (48GB VRAM), 8 vCPU, 64 GiB  (current)
-#   g6  / 2xlarge  = 1x L4   (24GB VRAM), 8 vCPU, 32 GiB
-#   g6  / xlarge   = 1x L4   (24GB VRAM), 4 vCPU, 16 GiB
+# g6 = NVIDIA L4 (24GB VRAM). Multiple sizes for capacity availability.
+# IMPORTANT: Both nodes must use the same GPU family for compile cache sharing.
+#   g6.xlarge   = 1x L4, 4 vCPU, 16 GiB
+#   g6.2xlarge  = 1x L4, 8 vCPU, 32 GiB
+#   g6.4xlarge  = 1x L4, 16 vCPU, 64 GiB
+#   g6.8xlarge  = 1x L4, 32 vCPU, 128 GiB
+#   g6.16xlarge = 1x L4, 64 vCPU, 256 GiB
 ---
 apiVersion: karpenter.sh/v1
 kind: NodePool
@@ -19,10 +22,13 @@ spec:
           values: ["on-demand"]
         - key: karpenter.k8s.aws/instance-family
           operator: In
-          values: ["g6e"]       # g6e = L40S (48GB), g6 = L4 (24GB)
+          values: ["g6"]         # g6 = L4 (24GB); same GPU on both nodes for compile cache
         - key: karpenter.k8s.aws/instance-size
           operator: In
-          values: ["2xlarge"]   # 2xlarge avoids tight CPU/memory on xlarge
+          values: ["xlarge", "2xlarge", "4xlarge", "8xlarge", "16xlarge"]   # all 1-GPU g6 sizes
+        - key: karpenter.k8s.aws/instance-gpu-count
+          operator: In
+          values: ["1"]
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass

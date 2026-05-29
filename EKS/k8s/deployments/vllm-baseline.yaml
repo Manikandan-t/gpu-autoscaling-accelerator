@@ -37,7 +37,7 @@ spec:
           command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
           args:
             - "--model"
-            - "/shared/models/Qwen2.5-14B-Instruct"
+            - "/shared/models/Qwen2.5-7B-Instruct"
             - "--max-model-len"
             - "12000"
             - "--gpu-memory-utilization"

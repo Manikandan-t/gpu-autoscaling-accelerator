@@ -6,10 +6,9 @@ kind: EC2NodeClass
 metadata:
   name: gpu-nodeclass
 spec:
-  amiFamily: AL2023
   amiSelectorTerms:
     - alias: al2023@latest
-  role: "KarpenterNodeRole-gpu-accelerator-20260529073014540000000016"
+  role: "KarpenterNodeRole-gpu-accelerator"
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: "gpu-accelerator"

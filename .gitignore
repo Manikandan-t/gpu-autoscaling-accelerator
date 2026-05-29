@@ -4,3 +4,6 @@
 /EKS/terraform/terraform.tfstate
 /EKS/terraform/terraform.tfstate.backup
 /EKS/terraform/.terraform.lock.hcl
+/EKS/terraform/tfplan
+/EKS/terraform/plan.tfplan
+/EKS/terraform.tfstate

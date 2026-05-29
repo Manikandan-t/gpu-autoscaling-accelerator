@@ -1,4 +1,4 @@
-# Downloads Llama-3.1-8B-Instruct to the shared EFS volume
+# Downloads Qwen2.5-7B-Instruct to the shared EFS volume
 # Prerequisite: kubectl create secret generic hf-token --from-literal=token=<YOUR_HF_TOKEN>
 ---
 apiVersion: batch/v1
@@ -19,8 +19,8 @@ spec:
               set -ex
               pip install --no-cache-dir huggingface_hub[hf_xet]
               hf download \
-                Qwen/Qwen2.5-14B-Instruct \
-                --local-dir /shared/models/Qwen2.5-14B-Instruct
+                Qwen/Qwen2.5-7B-Instruct \
+                --local-dir /shared/models/Qwen2.5-7B-Instruct
           env:
             - name: HF_TOKEN
               valueFrom:
