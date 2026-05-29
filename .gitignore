@@ -1,0 +1,6 @@
+.venv
+.idea
+/EKS/terraform/.terraform/
+/EKS/terraform/terraform.tfstate
+/EKS/terraform/terraform.tfstate.backup
+/EKS/terraform/.terraform.lock.hcl

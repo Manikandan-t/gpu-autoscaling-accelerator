@@ -1,0 +1,79 @@
+# Baseline vLLM Deployment
+# - Reads model directly from EFS (slow network filesystem)
+# - No compile cache persistence (each pod compiles from scratch)
+# - Standard DockerHub image pull (no Spegel P2P)
+# - No initContainer, no fastsafetensors
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-baseline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-baseline
+  template:
+    metadata:
+      labels:
+        app: vllm-baseline
+    spec:
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: karpenter.sh/nodepool
+                    operator: Exists
+      containers:
+        - name: vllm
+          image: docker.io/vllm/vllm-openai:latest
+          ports:
+            - containerPort: 8000
+          command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+          args:
+            - "--model"
+            - "/shared/models/Qwen2.5-14B-Instruct"
+            - "--max-model-len"
+            - "12000"
+            - "--gpu-memory-utilization"
+            - "0.90"
+            - "--dtype"
+            - "bfloat16"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--max-num-seqs"
+            - "16"
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              cpu: "4"
+              memory: "16Gi"
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: shared-cache
+              mountPath: /shared
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 120
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 5
+            periodSeconds: 10
+      volumes:
+        - name: shared-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc

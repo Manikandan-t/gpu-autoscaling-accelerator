@@ -1,0 +1,25 @@
+# Baseline EC2NodeClass: AL2023 GPU AMI
+# No containerd overrides -- standard image pull behavior (DockerHub direct)
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: gpu-nodeclass
+spec:
+  amiFamily: AL2023
+  amiSelectorTerms:
+    - alias: al2023@latest
+  role: "KarpenterNodeRole-gpu-accelerator-20260529073014540000000016"
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "gpu-accelerator"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "gpu-accelerator"
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 200Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true

@@ -1,0 +1,36 @@
+# GPU NodePool: on-demand instances with GPU taint and WhenEmpty consolidation
+# Used by both baseline and optimized experiments (paired with respective EC2NodeClass)
+#
+# To switch instance type, change instance-family and instance-size:
+#   g6e / 2xlarge  = 1x L40S (48GB VRAM), 8 vCPU, 64 GiB  (current)
+#   g6  / 2xlarge  = 1x L4   (24GB VRAM), 8 vCPU, 32 GiB
+#   g6  / xlarge   = 1x L4   (24GB VRAM), 4 vCPU, 16 GiB
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: gpu-inference
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: ["g6e"]       # g6e = L40S (48GB), g6 = L4 (24GB)
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: ["2xlarge"]   # 2xlarge avoids tight CPU/memory on xlarge
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: gpu-nodeclass
+      taints:
+        - key: nvidia.com/gpu
+          value: "true"
+          effect: NoSchedule
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 1m

@@ -1,0 +1,36 @@
+# Downloads Llama-3.1-8B-Instruct to the shared EFS volume
+# Prerequisite: kubectl create secret generic hf-token --from-literal=token=<YOUR_HF_TOKEN>
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: model-download
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: downloader
+          image: python:3.11-slim
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -ex
+              pip install --no-cache-dir huggingface_hub[hf_xet]
+              hf download \
+                Qwen/Qwen2.5-14B-Instruct \
+                --local-dir /shared/models/Qwen2.5-14B-Instruct
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+          volumeMounts:
+            - name: shared-cache
+              mountPath: /shared
+      volumes:
+        - name: shared-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc

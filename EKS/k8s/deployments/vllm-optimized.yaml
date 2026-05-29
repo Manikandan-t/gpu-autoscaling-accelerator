@@ -1,0 +1,105 @@
+# Optimized vLLM Deployment
+# - initContainer copies model from EFS to emptyDir (fast local storage)
+# - fastsafetensors: loads model weights directly to GPU VRAM via GPU Direct Storage
+# - Compile cache on EFS: Node 1 writes, Node 2 reads (skips compilation)
+# - Spegel P2P image pull (requires optimized-nodeclass.yaml)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-optimized
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-optimized
+  template:
+    metadata:
+      labels:
+        app: vllm-optimized
+    spec:
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: karpenter.sh/nodepool
+                    operator: Exists
+      initContainers:
+        - name: model-cache-sync
+          image: alpine:latest
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Syncing model weights from EFS to local emptyDir..."
+              cp -r /shared/models/Qwen2.5-14B-Instruct /local-cache/
+              echo "Sync complete."
+          volumeMounts:
+            - name: shared-cache
+              mountPath: /shared
+              readOnly: true
+            - name: local-cache
+              mountPath: /local-cache
+      containers:
+        - name: vllm
+          image: docker.io/vllm/vllm-openai:latest
+          ports:
+            - containerPort: 8000
+          command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+          args:
+            - "--model"
+            - "/local-cache/Qwen2.5-14B-Instruct"
+            - "--max-model-len"
+            - "12000"
+            - "--gpu-memory-utilization"
+            - "0.90"
+            - "--dtype"
+            - "bfloat16"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--max-num-seqs"
+            - "16"
+          env:
+            - name: USE_FASTSAFETENSOR
+              value: "true"
+            - name: VLLM_WORKER_MULTIPROC_METHOD
+              value: "spawn"
+            - name: VLLM_CACHE_ROOT
+              value: "/shared/compile_cache"
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              cpu: "4"
+              memory: "16Gi"
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: shared-cache
+              mountPath: /shared
+            - name: local-cache
+              mountPath: /local-cache
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 120
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 3
+            periodSeconds: 5
+      volumes:
+        - name: shared-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+        - name: local-cache
+          emptyDir: {}
