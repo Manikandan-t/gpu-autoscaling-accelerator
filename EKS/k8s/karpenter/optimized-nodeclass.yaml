@@ -4,6 +4,16 @@
 # - config_path for certs.d: enables Spegel registry mirror interception
 # - Spegel init container creates mirror config at _default/hosts.toml
 # - Do NOT create docker.io/hosts.toml here -- it would override Spegel's mirror
+#
+# instanceStorePolicy: RAID0 — Karpenter auto-formats all NVMe instance store
+# devices as RAID0 and mounts to /mnt/k8s-disks/0. Kubelet uses this as
+# ephemeral storage, so emptyDir volumes are automatically NVMe-backed.
+# No manual userData script needed for NVMe formatting.
+#
+# userData script: Installs nvidia-gds (best-effort, non-fatal).
+# NOTE: GDS provides minimal benefit on local NVMe/ext4 — it is designed for
+# distributed filesystems (Lustre, WekaFS). On local NVMe, fastsafetensors
+# falls back to its POSIX I/O path (nogds=True), which is still fast.
 ---
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
@@ -19,6 +29,7 @@ spec:
   securityGroupSelectorTerms:
     - tags:
         karpenter.sh/discovery: "gpu-accelerator"
+  instanceStorePolicy: RAID0
   blockDeviceMappings:
     - deviceName: /dev/xvda
       ebs:
@@ -29,6 +40,38 @@ spec:
   userData: |
     MIME-Version: 1.0
     Content-Type: multipart/mixed; boundary="BOUNDARY"
+
+    --BOUNDARY
+    Content-Type: text/x-shellscript; charset="us-ascii"
+
+    #!/bin/bash
+    # Best-effort GDS install — non-fatal, node boot must not be blocked by failure.
+    # GDS is designed for distributed filesystems (Lustre, WekaFS). On local NVMe
+    # with ext4, nvidia_fs.ko runs in compatibility mode or doesn't engage at all.
+    # fastsafetensors will fall back to its POSIX I/O path (nogds=True), which is
+    # still fast on NVMe. This install is kept for completeness only.
+    set +e
+
+    echo "[gds-install] Installing kernel-devel prerequisite..."
+    dnf install -y kernel-devel-$(uname -r) 2>&1 | while read line; do echo "[gds-install] $line"; done
+    if [ $? -ne 0 ]; then
+      echo "[gds-install] WARNING: kernel-devel install failed — nvidia_fs.ko build will likely fail"
+    fi
+
+    echo "[gds-install] Installing nvidia-gds..."
+    dnf install -y nvidia-gds 2>&1 | while read line; do echo "[gds-install] $line"; done
+    if [ $? -ne 0 ]; then
+      echo "[gds-install] WARNING: nvidia-gds install failed — GDS will not be available (expected on some AMIs)"
+      exit 0
+    fi
+
+    echo "[gds-install] Loading nvidia_fs module..."
+    modprobe nvidia_fs 2>&1 | while read line; do echo "[gds-install] $line"; done
+    if [ $? -ne 0 ]; then
+      echo "[gds-install] WARNING: modprobe nvidia_fs failed — GDS will not be available"
+    else
+      echo "[gds-install] nvidia_fs module loaded successfully"
+    fi
 
     --BOUNDARY
     Content-Type: application/node.eks.aws

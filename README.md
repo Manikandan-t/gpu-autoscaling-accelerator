@@ -21,10 +21,10 @@ Unoptimized total: **10-15 minutes**. This repo provides the infrastructure and 
 - No compile cache persistence (each pod compiles CUDA graphs from scratch)
 
 **Optimized experiment** — applies all optimizations:
-- **Spegel P2P** image distribution from existing cluster nodes
+- **Spegel P2P** (v0.7.1, tuned timeouts) image distribution from existing cluster nodes
 - **containerd 2.1 overrides** (`use_local_image_pull=true`, `discard_unpacked_layers=false`) to make Spegel work on AL2023
-- **initContainer** copies model weights from shared EFS to fast local emptyDir
-- **fastsafetensors** for GPUDirect Storage weight loading (NVMe → GPU VRAM, bypassing CPU)
+- **NVMe instance store** via Karpenter `instanceStorePolicy: RAID0` — emptyDir volumes are automatically NVMe-backed (mounted at `/mnt/k8s-disks/0`); no manual userData formatting needed
+- **fastsafetensors** — fast model weight loading via POSIX I/O on NVMe. GDS driver installed best-effort but provides minimal benefit on local NVMe/ext4 (designed for distributed FS)
 - **Persistent torch.compile cache** on shared EFS (`VLLM_CACHE_ROOT`) — first pod compiles, subsequent pods skip
 
 Both experiments use the same two-node scale-up pattern: Node 1 runs, scale to 2 replicas, measure Node 2's full cold-start.
@@ -100,7 +100,7 @@ See [`EKS/DEPLOYMENT_GUIDE.md`](EKS/DEPLOYMENT_GUIDE.md) for complete step-by-st
 | Phase | Baseline | Optimized | Technique |
 |-------|----------|-----------|-----------|
 | Image Pull | 3-5 min | 30-60s | Spegel P2P (requires containerd 2.1 overrides) |
-| Model Load | 2-5 min (EFS direct) | ~60-90s (copy) + fast read | initContainer EFS → emptyDir + fastsafetensors |
+| Model Load | 2-5 min (EFS direct) | ~60-90s (copy) + fast read | NVMe emptyDir (instanceStorePolicy) + fastsafetensors |
 | CUDA Compilation | 20-30s (7B) | ~8s | Shared compile cache on EFS (`VLLM_CACHE_ROOT`) |
 | Node Provisioning | 90-120s | 90-120s | Hardware bound (not optimizable) |
 
@@ -108,7 +108,8 @@ See [`EKS/DEPLOYMENT_GUIDE.md`](EKS/DEPLOYMENT_GUIDE.md) for complete step-by-st
 
 - **containerd 2.1 silently breaks Spegel** — `use_local_image_pull=false` (default) bypasses all registry mirrors; `discard_unpacked_layers=true` (default) prevents P2P layer serving. Both must be overridden in EC2NodeClass userData.
 - **Cross-SG networking** — Karpenter nodes use the cluster SG, managed nodes use a separate SG. Without bidirectional rules, Spegel DNS resolution fails.
-- **fastsafetensors GDS fallback** — On instances without GDS drivers (g6/L4 on standard AMIs), fastsafetensors silently falls back to standard loading with zero benefit. Check for `GDS not enabled, setting nogds=True` in logs.
+- **GDS on local NVMe is a no-op** — NVIDIA GPUDirect Storage is designed for distributed filesystems (Lustre, WekaFS). On local NVMe with ext4, `nvidia_fs.ko` runs in compatibility mode or doesn't engage. fastsafetensors falls back to POSIX I/O (`nogds=True`), which is still fast on NVMe. The real performance gain is NVMe vs EFS, not GDS.
+- **Spegel default `mirrorResolveTimeout` of 20ms is too aggressive** — Kademlia DHT lookups exceeding 20ms fall back to upstream. Tuning to 5s with 5 retries significantly improves cache hit rates.
 - **Compile cache is GPU-specific** — A100 (compute 8.0) and L4 (compute 8.9) produce different cache hashes. NodePool must restrict to a single GPU family.
 
 ## Hardware
@@ -117,7 +118,7 @@ The EKS implementation uses:
 - **GPU instances:** g6 family (NVIDIA L4, 24GB VRAM) via Karpenter
 - **System nodes:** m5.large (managed node group)
 - **Model:** Qwen2.5-7B-Instruct
-- **Storage:** EFS (ReadWriteMany) for shared model cache and compile cache
+- **Storage:** EFS (ReadWriteMany) for shared model cache and compile cache; NVMe instance store (Karpenter `instanceStorePolicy: RAID0`) for fast local model reads via emptyDir
 
 ## Teardown
 

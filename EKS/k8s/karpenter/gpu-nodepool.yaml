@@ -3,11 +3,12 @@
 #
 # g6 = NVIDIA L4 (24GB VRAM). Multiple sizes for capacity availability.
 # IMPORTANT: Both nodes must use the same GPU family for compile cache sharing.
-#   g6.xlarge   = 1x L4, 4 vCPU, 16 GiB
-#   g6.2xlarge  = 1x L4, 8 vCPU, 32 GiB
-#   g6.4xlarge  = 1x L4, 16 vCPU, 64 GiB
-#   g6.8xlarge  = 1x L4, 32 vCPU, 128 GiB
-#   g6.16xlarge = 1x L4, 64 vCPU, 256 GiB
+#   g6.xlarge   = 1x L4, 4 vCPU, 16 GiB,  250 GB NVMe instance store
+#   g6.2xlarge  = 1x L4, 8 vCPU, 32 GiB,  450 GB NVMe instance store
+#   g6.4xlarge  = 1x L4, 16 vCPU, 64 GiB,  600 GB NVMe instance store
+#   g6.8xlarge  = 1x L4, 32 vCPU, 128 GiB, 900 GB NVMe instance store
+#   g6.16xlarge = 1x L4, 64 vCPU, 256 GiB, 1.9 TB NVMe instance store
+# All sizes have sufficient NVMe for the 7B model (~15GB safetensors).
 ---
 apiVersion: karpenter.sh/v1
 kind: NodePool

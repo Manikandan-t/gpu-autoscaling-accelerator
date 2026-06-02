@@ -12,8 +12,8 @@ Baseline:
 Optimized:
   Node 1 (running) <- vLLM + Spegel seed + compile cache written to EFS
   Scale to 2 replicas -> Karpenter provisions Node 2
-  Measure Node 2: node provision -> image pull (Spegel P2P) -> initContainer (EFS->emptyDir)
-                   -> model load (emptyDir + fastsafetensors) -> compile cache HIT -> ready
+  Measure Node 2: node provision -> image pull (Spegel P2P) -> initContainer (EFS->NVMe emptyDir)
+                   -> model load (NVMe + fastsafetensors) -> compile cache HIT -> ready
 ```
 
 ---
@@ -352,10 +352,18 @@ helm upgrade --install spegel \
     --create-namespace \
     --namespace spegel \
     oci://ghcr.io/spegel-org/helm-charts/spegel \
+    --version v0.7.1 \
+    --set "spegel.mirrorResolveTimeout=5s" \
+    --set "spegel.mirrorResolveRetries=5" \
     --set "tolerations[0].key=nvidia.com/gpu" \
     --set "tolerations[0].operator=Exists" \
     --set "tolerations[0].effect=NoSchedule"
 ```
+
+> **Timeout tuning:** The default `mirrorResolveTimeout` of 20ms is extremely aggressive — Kademlia
+> DHT lookups that exceed 20ms fall back to the upstream registry. Increasing to 5s with 5 retries
+> gives the P2P network enough time to resolve peers, significantly improving cache hit rates.
+> A 100% hit rate is not achievable by design (the first pull of any image always misses).
 
 ### 5.3 Verify Spegel installation
 
@@ -403,9 +411,11 @@ curl -s http://localhost:9090/metrics | grep spegel_mirror_requests_total
 
 ### 5.4 Apply Karpenter resources (with containerd overrides for Spegel)
 
-The optimized EC2NodeClass configures containerd with:
+The optimized EC2NodeClass configures containerd overrides, NVMe storage, and a boot-time script:
 - `config_path = "/etc/containerd/certs.d"` — enables Spegel's registry mirror interception
 - `discard_unpacked_layers = false` — preserves image layers so Spegel can serve them to peers
+- **`instanceStorePolicy: RAID0`** — Karpenter auto-formats all NVMe instance store devices as RAID0 and mounts to `/mnt/k8s-disks/0`. Kubelet uses this as ephemeral storage, so `emptyDir` volumes are automatically NVMe-backed. No manual userData script needed.
+- **nvidia-gds** — installed best-effort via userData (`dnf install nvidia-gds`). Note: GDS provides minimal benefit on local NVMe/ext4 (designed for distributed FS like Lustre). fastsafetensors falls back to POSIX I/O on NVMe, which is still fast.
 
 ```bash
 kubectl apply -f k8s/karpenter/optimized-nodeclass.yaml
@@ -459,7 +469,7 @@ kubectl get events \
 
 **Application logs:**
 ```bash
-# Init container (EFS -> emptyDir copy time)
+# Init container (EFS -> NVMe copy time)
 kubectl logs $POD2 -c model-cache-sync --timestamps
 
 # Main container (model load, compile cache hit)
@@ -474,10 +484,26 @@ SPEGEL_POD2=$(kubectl get pods -n spegel --field-selector spec.nodeName=$NODE2 -
 kubectl exec -n spegel $SPEGEL_POD2 -- wget -qO- http://localhost:9090/metrics 2>/dev/null | grep spegel_mirror_requests_total
 ```
 
+**Verify NVMe via instanceStorePolicy on Node 2:**
+```bash
+# Karpenter mounts NVMe RAID0 to /mnt/k8s-disks/0
+kubectl debug node/$NODE2 -it --image=busybox -- df -h /host/mnt/k8s-disks/0
+
+# Verify kubelet ephemeral storage is on NVMe
+kubectl debug node/$NODE2 -it --image=busybox -- df -h /host/var/lib/kubelet
+
+# GDS install status (check cloud-init logs — may or may not have succeeded)
+kubectl debug node/$NODE2 -it --image=busybox -- cat /host/var/log/cloud-init-output.log | grep gds-install
+
+# Check vLLM logs for GDS status — "nogds=True" is EXPECTED on local NVMe/ext4
+# This is not a problem; the real perf gain is NVMe vs EFS, not GDS
+kubectl logs $POD2 -c vllm | grep -i "nogds"
+```
+
 **Expected improvements:**
 - Image pull: Fast via Spegel P2P from Node 1
-- Init container: EFS to emptyDir copy
-- Model load: From emptyDir with fastsafetensors (GPU Direct Storage)
+- Init container: EFS to NVMe-backed emptyDir copy
+- Model load: From NVMe with fastsafetensors (POSIX I/O on NVMe — fast)
 - Graph compile: Near-zero (cache hit from EFS)
 
 ### 5.10 Cleanup optimized
@@ -503,7 +529,7 @@ Phase                  | Baseline  | Optimized | Improvement
 -----------------------|-----------|-----------|------------
 Node Provisioning      | XXs       | XXs       | ~same
 Image Pull             | XXs       | XXs       | Spegel P2P
-Model Load             | XXs       | XXs       | emptyDir + fastsafetensors
+Model Load             | XXs       | XXs       | NVMe emptyDir (instanceStorePolicy) + fastsafetensors
 Graph Compilation      | XXs       | XXs       | EFS cache hit
 Total Time-to-Ready    | XXs       | XXs       | XX% faster
 ```
@@ -581,12 +607,27 @@ Node 2 recompiles from scratch. To ensure cache reuse:
 AOT compilation artifacts are architecture-independent and will be shared even across GPU types.
 Only the graph compilation is GPU-specific.
 
-### fastsafetensors GDS not available
+### fastsafetensors shows `nogds=True`
 
-fastsafetensors uses GPU Direct Storage (GDS) to load model weights directly to GPU VRAM.
-GDS requires hardware support — not all GPU types support it. If you see
-`GDS not enabled, setting nogds=True` in logs, the GPU does not support GDS and
-fastsafetensors falls back to regular loading. L4 (g6) may support GDS; A10G (g5) does not.
+**This is expected behavior on local NVMe/ext4.** GDS (GPUDirect Storage) is designed for
+distributed filesystems (Lustre, WekaFS) where it enables direct DMA from storage to GPU VRAM.
+On local NVMe with ext4, `nvidia_fs.ko` either runs in compatibility mode (CPU bounce buffer,
+no faster than POSIX I/O) or doesn't engage at all. fastsafetensors detects this and falls back
+to its `nogds` POSIX I/O path, which is still fast on NVMe.
+
+**The real performance gain is NVMe vs EFS, not GDS vs no-GDS.** Reading model weights from
+local NVMe (~3 GB/s) instead of EFS (~100-200 MB/s) is the optimization that matters.
+
+To verify the GDS install script ran (for diagnostic purposes only):
+```bash
+kubectl debug node/<NODE> -it --image=busybox -- \
+    cat /host/var/log/cloud-init-output.log | grep "gds-install"
+```
+
+Common reasons the GDS install fails (all are non-fatal):
+1. `kernel-devel-$(uname -r)` not available — needed to build `nvidia_fs.ko`
+2. NVIDIA repo not configured on the AMI
+3. A10G (g5) does not support GDS regardless of driver installation
 
 ### Spegel P2P not intercepting image pulls
 
@@ -600,6 +641,38 @@ set `config_path` and `discard_unpacked_layers` — Spegel's init container hand
 If Spegel pods show `routing table is empty after bootstrapping` or DNS resolution timeouts,
 the root cause is usually missing cross-SG rules between Karpenter and managed node security groups.
 See Phase 5 Step 5.1 for the fix.
+
+### Spegel cache hit rate below 100%
+
+A 100% cache hit rate is **not achievable by design**. The first pull of any image on any node
+always results in a cache miss (the image must be fetched from upstream at least once). Subsequent
+nodes pulling the same image should see cache hits.
+
+If hit rates are significantly below expected (~70-90%), common causes:
+
+1. **Timeout too aggressive:** The default `mirrorResolveTimeout` of 20ms is extremely tight.
+   Kademlia DHT lookups that exceed this fall back to the upstream registry. The optimized install
+   uses 5s with 5 retries — verify with `helm get values spegel -n spegel`.
+2. **DHT propagation delay:** After a node pulls an image, it takes time for the DHT to propagate
+   the availability to peers. If the second node requests the image before propagation completes,
+   it misses the cache.
+3. **Different image tags or digests:** Spegel resolves by digest. If nodes pull different tags
+   that resolve to different digests, each is a separate cache entry.
+
+**Diagnostic commands:**
+```bash
+# Check Spegel version (should be v0.7.1)
+helm list -n spegel
+
+# Check configured values
+helm get values spegel -n spegel
+
+# Check hit/miss metrics
+SPEGEL_POD=$(kubectl get pods -n spegel -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -n spegel $SPEGEL_POD -- wget -qO- http://localhost:9090/metrics 2>/dev/null \
+    | grep spegel_mirror_requests_total
+# Look for cache="hit" vs cache="miss" counts
+```
 
 ### Stale nodes after NodePool/EC2NodeClass deletion
 

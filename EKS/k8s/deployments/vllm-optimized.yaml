@@ -1,6 +1,10 @@
 # Optimized vLLM Deployment
-# - initContainer copies model from EFS to emptyDir (fast local storage)
-# - fastsafetensors: loads model weights directly to GPU VRAM via GPU Direct Storage
+# - initContainer copies model from EFS to NVMe-backed emptyDir
+#   (NVMe-backed via Karpenter instanceStorePolicy: RAID0 — emptyDir stored
+#   under kubelet's directory on /mnt/k8s-disks/0)
+# - fastsafetensors: loads model weights with POSIX I/O on NVMe (fast).
+#   GDS driver installed best-effort at boot but provides minimal benefit on
+#   local NVMe/ext4 — nogds=True in logs is expected and not a problem.
 # - Compile cache on EFS: Node 1 writes, Node 2 reads (skips compilation)
 # - Spegel P2P image pull (requires optimized-nodeclass.yaml)
 ---
@@ -35,7 +39,7 @@ spec:
           command: ["sh", "-c"]
           args:
             - |
-              echo "Syncing model weights from EFS to local emptyDir..."
+              echo "Syncing model weights from EFS to NVMe-backed emptyDir..."
               cp -r /shared/models/Qwen2.5-7B-Instruct /local-cache/
               echo "Sync complete."
           volumeMounts:
